@@ -20,7 +20,7 @@ def table_to_nested_json(df: pd.DataFrame, projno) -> Dict[str, List[Dict[str, A
     entry_keys = ["period_label","iProjNo_group","section","TYP"]
     d = d.sort_values(["period_label","iProjNo_group","section","TYP","cSubDesc2","cSubDesc3"])
 
-    # 1) Pre-sum at the deepest level (entry + cat2 + cat3) → faster than summing inside nested loops
+    # 1) Pre-sum at the deepest level 
     deep = (d.groupby(entry_keys + ["cSubDesc2","cSubDesc3", "cClient","cProjDesc","cProjMgr","cClientDesc","cMajorDesc","cBookDesc"], dropna=False)[["rForecast","rYearAct"]]
               .sum().reset_index())
 
@@ -45,8 +45,8 @@ def table_to_nested_json(df: pd.DataFrame, projno) -> Dict[str, List[Dict[str, A
 
         entry = {
             "job_no": safe_str(job_no),
-            "description": safe_str(_longest_nonempty(g['cProjDesc'])),
-            "client": safe_str(_longest_nonempty(g["cClientDesc"])),
+            "description": safe_str(_longest_nonempty(g['cProjDesc'], True)),
+            "client": safe_str(_longest_nonempty(g["cClientDesc"], True)),
             "section": safe_str(section),
             "cost_type": safe_str(cost_type),
             "Total_forecast_costs_at_completion": float(sum(x["forecast_costs_at_completion"] for x in cost_lines)),
@@ -67,8 +67,8 @@ def preprocess_df_collapse_projects(df_all: pd.DataFrame, sum_col: str) -> pd.Da
 
     return (df.groupby("iProjNo_group", dropna=False, sort=False)
               .agg(iProjYear=("iProjYear", _first_nonempty),
-                   cProjDesc=("cProjDesc", _longest_nonempty),
-                   cClientDesc=("cClientDesc", _longest_nonempty),
+                   cProjDesc=("cProjDesc", lambda s: _longest_nonempty(s, True)),
+                   cClientDesc=("cClientDesc", lambda s: _longest_nonempty(s, True)),
                    **{sum_col: (sum_col, "sum")})
               .reset_index()
               .rename(columns={"iProjNo_group": "iProjNo"}))
@@ -78,23 +78,18 @@ def combine_projects_rows(df: pd.DataFrame, project_groups: dict, key_cols=None,
     if key_cols is None:
         key_cols = ["iProjYear","cSegment","cPeriod","TYP","cType"]
 
-    # de-dupe key_cols 
     key_cols = list(dict.fromkeys(key_cols))
 
     req = ["iProjNo"] + key_cols
     miss = [c for c in req if c not in df.columns]
     if miss: raise KeyError(f"Missing required columns in df: {miss}")
-
     out = df.copy()
 
-    # map iProjNo -> group label
     proj_to_label = _normalize_project_groups(project_groups)
     out["iProjNo_int"] = pd.to_numeric(out["iProjNo"], errors="coerce").astype("Int64")
     out["iProjNo_group"] = out["iProjNo_int"].map(proj_to_label).fillna(out["iProjNo_int"].astype(str))
-
     group_cols = ["iProjNo_group"] + key_cols
 
-    # normalize sum_cols
     if sum_cols is None:
         sum_cols = []
     elif isinstance(sum_cols, str):
@@ -109,12 +104,11 @@ def combine_projects_rows(df: pd.DataFrame, project_groups: dict, key_cols=None,
         if c in group_cols or c in agg or c == "iProjNo_int":
             continue
         agg[c] = first_nonnull
-
+    out = out[out["cType"] == "F"].copy()
     combined = out.groupby(group_cols, dropna=False, as_index=False, sort=False).agg(agg)
-    combined = combined[combined['cType']=='F']
     if combined.empty:
         return combined
-
+    
     combined["cSubDesc2"] = combined["cSubDesc2"].replace("", pd.NA)
     combined["cSubDesc3"] = combined["cSubDesc3"].replace("", pd.NA).fillna(combined["cSubDesc2"])
     major = combined["cMajorDesc"].fillna("").astype(str)
@@ -123,8 +117,7 @@ def combine_projects_rows(df: pd.DataFrame, project_groups: dict, key_cols=None,
 
     text_cols = [c for c in ["cProjDesc","cBookDesc","cClientDesc","cMainDesc","cClient","cBook","cProjMgr"] if c in combined.columns]
     if text_cols:
-        merged = (combined.groupby("iProjNo_group", dropna=False)[text_cols]
-                          .transform(merge_or_longest))
+        merged = (combined.groupby("iProjNo_group", dropna=False)[text_cols].transform(_longest_nonempty, False))
         combined[text_cols] = merged
 
     return combined
@@ -163,8 +156,8 @@ def compute_forecast_diff(path_to_jsons: List[str], metric: str) -> Dict[str, An
         total_ct1, parent_ct1, child_ct1 = aggregate_costlines_trajectory(items1, metric, exclude_revenue=True)
         total_ct2, parent_ct2, child_ct2 = aggregate_costlines_trajectory(items2, metric, exclude_revenue=True)
 
-        description = _longest_nonempty([r.get("description") for r in items1 + items2]) or ""
-        client      = _longest_nonempty([r.get("client") for r in items1 + items2]) or ""
+        description = _longest_nonempty([r.get("description") for r in items1 + items2], True) or ""
+        client      = _longest_nonempty([r.get("client") for r in items1 + items2], True) or ""
 
         # -----------------------------
         # B) Increases by MAIN COST TYPE  (cost_type totals)

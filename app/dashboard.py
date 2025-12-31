@@ -16,10 +16,10 @@ from contextlib import contextmanager
 from typing import Dict, List, Any
 from sqlalchemy.orm import sessionmaker, Session
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from sql import base_sql
-from utils import make_periods, get_filter_options, period_to_label
-from prepare_data import hand_crafted_summary, compute_forecast_diff, table_to_nested_json, combine_projects_rows, preprocess_df_collapse_projects
-from config import projects_list, metric_map, DB_USER, DB_PASSWORD, DB_HOST, DB_NAME, DB_DRIVER, api_key, TEMPERATURE, FREQUENCY_PENALTY, MAX_TOKENS, URL
+from app.sql import base_sql
+from app.utils import make_periods, get_filter_options, period_to_label
+from app.prepare_data import hand_crafted_summary_markdown, compute_forecast_diff, table_to_nested_json, combine_projects_rows, preprocess_df_collapse_projects
+from app.config import projects_list, metric_map, DB_USER, DB_PASSWORD, DB_HOST, DB_NAME, DB_DRIVER, api_key, TEMPERATURE, FREQUENCY_PENALTY, MAX_TOKENS, URL
 
 sql = "SET NOCOUNT ON;\n" + base_sql
 connection_string = (
@@ -43,31 +43,27 @@ def db_session():
 # =========================================================================================
 
 def query_batch_to_df(db: Session, period: str) -> pd.DataFrame: 
-    # NOCOUNT reduces “rows affected” noise between statements
-    # Get the raw pyodbc connection/cursor
     params = (period)
     conn = db.connection()
-    raw_conn = conn.connection  # pyodbc.Connection
+    raw_conn = conn.connection
     cur = raw_conn.cursor()
     cur.execute(sql, params)
-    # Advance to the first result set that returns columns
     while cur.description is None:
         if not cur.nextset():
-            return pd.DataFrame()  # no row-returning result sets in this batch
+            return pd.DataFrame() 
 
     cols = [c[0] for c in cur.description]
     rows = cur.fetchall()
     return pd.DataFrame.from_records(rows, columns=cols)
 
 @st.cache_data(show_spinner=False)
-def run_forecast_pipeline_json(from_period, to_period, project_no, metric): #projyear
+def run_forecast_pipeline_json(from_period, to_period, project_no, metric):
     with db_session() as db:  
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             out_paths: List[Path] = []
             try:
                 for period in [from_period, to_period]:
-                #if df is empty it should fail gracefully
                     df = query_batch_to_df(db, period)
                     df = combine_projects_rows(df, project_groups=projects_list, sum_cols=metric_map[metric])
                     json_file = table_to_nested_json(df, project_no)
@@ -78,7 +74,7 @@ def run_forecast_pipeline_json(from_period, to_period, project_no, metric): #pro
                 return compute_forecast_diff(out_paths, metric)
             except Exception as e:
                 st.warning("This project data does not exist. Please check your input parameters and try again.")
-                st.exception(e)
+                st.stop()
 
 
 def chat(user_input, system_prompt):
@@ -397,13 +393,12 @@ if not st.session_state.analysis_done or st.session_state.result is None:
 result = st.session_state.result
 projects = result.get("projects", {})
 try:
-    parts = hand_crafted_summary(projects, metric)
+    parts = hand_crafted_summary_markdown(projects, metric)
 except Exception as e:
     st.warning(f"Data collected for '{metric}'. Click **Run Analysis** to compute.")
     
 
 projects_df = projects_to_dataframe(projects)
-
 # Period labels for slope chart
 period1_label = projects_df["period1"].iloc[0]
 period2_label = projects_df["period2"].iloc[0]
@@ -540,7 +535,9 @@ with tab_summary:
         if project_key not in st.session_state.project_chats:
             st.session_state.project_chats[project_key] = [{"role": "system", "content": system_prompt}]
         st.session_state.messages = st.session_state.project_chats[project_key]
-
+        if st.button("Which is the main cost contributor for this project?"):
+            reply = chat("Which is the main cost contributor for this project?", system_prompt)
+            st.session_state.project_chats[project_key] = st.session_state.messages
         prompt = st.chat_input(f"Which is the main cost contributor for this project?") # Ask about project {selected_job} ({period1_label} → {period2_label})
         if prompt:
             reply = chat(prompt, system_prompt)
@@ -548,7 +545,7 @@ with tab_summary:
 
         for message in st.session_state.project_chats[project_key][1:]:
             with st.chat_message(message["role"]):
-                st.write(message["content"])
+                st.markdown(message["content"])
 
         if st.button("Reset Conversation"):
             st.session_state.project_chats[project_key] = [{"role": "system", "content": system_prompt}]

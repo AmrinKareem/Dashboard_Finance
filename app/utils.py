@@ -57,24 +57,40 @@ def _to_number(x: Any) -> float:
         return n
     except Exception:
         return 0.0
-def _longest_nonempty(values: Union[pd.Series, Iterable]) -> Optional[str]:
-    s = pd.Series(values)  # <-- key change
-    s = (
-        s.dropna()
+def _longest_nonempty(values: Union[pd.Series, Iterable], longest: bool) -> Optional[str]:
+    s = pd.Series(values)
+    s = (s.dropna()
          .astype(str)
          .map(str.strip)
          .replace("", pd.NA)
-         .dropna()
-    )
+         .dropna())
     if s.empty:
         return None
-    return s.loc[s.str.len().idxmax()]
+    if longest:
+        return s.loc[s.str.len().idxmax()]
+    else:
+        vals = s.unique()
+        if len(vals) == 0:
+            return pd.NA
+        if len(vals) == 1:
+            return vals[0]
+        return " & ".join(vals)
+
+
+# def merge_or_longest(s):
+#     vals = (s.dropna().astype(str).str.strip()
+#          .replace("", pd.NA).dropna()
+#          .unique())
+#     if len(vals) == 0:
+#         return pd.NA
+#     if len(vals) == 1:
+#         return vals[0]
+#     return " & ".join(vals)
 
 def _first_nonempty(series: pd.Series):
     s = series.dropna()
     if s.empty:
         return None
-    # treat "" as empty
     s = s.astype(str).map(lambda x: x.strip()).replace("", pd.NA).dropna()
     return None if s.empty else s.iloc[0]
 
@@ -126,7 +142,6 @@ def make_periods(start_ym="201901", end_ym=None):
     return periods
 
 def get_filter_options(db):
-
     try:
         periods_sql = text("""
             SELECT DISTINCT cPeriod
@@ -143,8 +158,6 @@ def get_filter_options(db):
     except Exception as e:
         db.rollback()
     return periods, projects
-
-
 
 
 def _normalize_project_groups(project_groups: dict) -> dict[int, str]:
@@ -169,21 +182,11 @@ def _normalize_project_groups(project_groups: dict) -> dict[int, str]:
     return proj_to_label
 
 
-def merge_or_longest(s: pd.Series):
-    vals = (
-        s.dropna().astype(str).str.strip()
-         .replace("", pd.NA).dropna()
-         .unique()
-    )
-    if len(vals) == 0:
-        return pd.NA
-    if len(vals) == 1:
-        return vals[0]
-    # multiple distinct → join
-    return " & ".join(vals)
+
 
 def filter_by_project(df, projno):
     # Split 'iProjNo' by ' & ' and check if projno is in the list
     mask = df['iProjNo_group'].apply(lambda x: str(projno) in [p.strip() for p in x.split('&')])
+    print(f"Filtering by project {projno}")
     return df[mask].reset_index(drop=True)
 
